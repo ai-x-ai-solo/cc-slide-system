@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 output/
 assets/processed/
+assets/_disabled_photos/
+assets/references/profiles/*.png

@@ -24,7 +24,7 @@
 - [ ] GitHubリポジトリを作成済み（またはZIPで提出）
 - [ ] リポジトリのURLを記録済み：
   ```
-  GitHub URL: 
+  GitHub URL: https://github.com/ai-x-ai-solo/cc-slide-system
   ```
 - [ ] `.env` ファイルをGitHubにpushしていないか確認（APIキー漏洩防止）
 - [ ] `.gitignore` に `.env` が含まれているか確認
@@ -63,7 +63,7 @@
 ```
 Googleドキュメント URL: https://docs.google.com/document/d/1mGOWpSg0mz8g4tEi7U8mQ08O95NL88EhArzNacu5QFI/edit?usp=sharing
 
-GitHub URL: 
+GitHub URL: https://github.com/ai-x-ai-solo/cc-slide-system
 
 Loom URL: 
 

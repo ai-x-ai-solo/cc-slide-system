@@ -7,12 +7,19 @@ V6: 3ターゲット訴求パターン
 設計: 1スライド1メッセージ / 1画面1感情 / 感情導線で構成
 """
 
+import sys
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.oxml.ns import qn
+from lxml import etree
+
+FONT_NAME = "Hiragino Kaku Gothic ProN"
 
 SLIDE_W = Inches(13.33)
 SLIDE_H = Inches(7.5)
@@ -99,6 +106,46 @@ def box(slide, l, t, w, h, color, bd_color=None, bd_w=None):
     return s
 
 
+def _set_font_full(run, font_name=FONT_NAME):
+    """latin / eastAsia / cs すべてに同じフォントを設定（フォント警告対策）"""
+    rPr = run._r.get_or_add_rPr()
+    for tag in ("a:latin", "a:ea", "a:cs"):
+        el = rPr.find(qn(tag))
+        if el is None:
+            el = etree.SubElement(rPr, qn(tag))
+        el.set("typeface", font_name)
+
+
+def normalize_all_fonts(prs, font_name=FONT_NAME):
+    """プレゼン全体（マスター・レイアウト・テーマ含む）のフォント参照を統一"""
+    elements_to_check = []
+    for master in prs.slide_masters:
+        elements_to_check.append(master.element)
+        for layout in master.slide_layouts:
+            elements_to_check.append(layout.element)
+        # テーマパート（XMLを直接取得）
+        for rel in master.part.rels.values():
+            if "theme" in rel.target_ref:
+                theme_part = rel.target_part
+                theme_xml = theme_part.blob
+                root = etree.fromstring(theme_xml)
+                changed = False
+                for el in root.iter():
+                    if "typeface" in el.attrib:
+                        el.set("typeface", font_name)
+                        changed = True
+                if changed:
+                    theme_part._blob = etree.tostring(
+                        root, xml_declaration=True, encoding="UTF-8", standalone=True
+                    )
+    for slide in prs.slides:
+        elements_to_check.append(slide.element)
+    for elem in elements_to_check:
+        for el in elem.iter():
+            if "typeface" in el.attrib:
+                el.set("typeface", font_name)
+
+
 def tx(slide, text, l, top, w, h, size, color,
        bold=False, align=PP_ALIGN.LEFT, wrap=True):
     if not text:
@@ -113,7 +160,7 @@ def tx(slide, text, l, top, w, h, size, color,
     r.font.size = Pt(size)
     r.font.color.rgb = color
     r.font.bold = bold
-    r.font.name = "Hiragino Kaku Gothic ProN"
+    _set_font_full(r)
 
 
 def frame(slide, p):
@@ -121,8 +168,35 @@ def frame(slide, p):
     box(slide, 0, Inches(7.43), SLIDE_W, Inches(0.07), p["accent"])
 
 
-def add_photo(slide, filename, left, top, width, height):
-    """正規化済み画像を優先、なければ元画像、なければスキップ"""
+def draw_silhouette(slide, left, top, width, height, p):
+    """人型シルエット（プロフィール写真のデフォルト表示・差し替え可能）"""
+    # 背景カード
+    bg_shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
+    bg_shape.fill.solid()
+    bg_shape.fill.fore_color.rgb = p["card"]
+    bg_shape.line.color.rgb = p["card_bd"]
+    bg_shape.line.width = Pt(1.5)
+    # 頭（円）
+    head_d = int(width * 0.32)
+    head_x = left + (width - head_d) // 2
+    head_y = top + int(height * 0.18)
+    head = slide.shapes.add_shape(MSO_SHAPE.OVAL, head_x, head_y, head_d, head_d)
+    head.fill.solid()
+    head.fill.fore_color.rgb = p["primary"]
+    head.line.fill.background()
+    # 肩・体（楕円）
+    body_w = int(width * 0.78)
+    body_h = int(height * 0.42)
+    body_x = left + (width - body_w) // 2
+    body_y = top + int(height * 0.55)
+    body = slide.shapes.add_shape(MSO_SHAPE.OVAL, body_x, body_y, body_w, body_h)
+    body.fill.solid()
+    body.fill.fore_color.rgb = p["primary"]
+    body.line.fill.background()
+
+
+def add_photo(slide, filename, left, top, width, height, p=None):
+    """画像があれば優先表示、なければ人型シルエットを描画（差し替え可能設計）"""
     normalized = filename.replace(".png", "-normalized.png")
     proc = PROCESSED_DIR / "profiles" / normalized
     ref  = ASSETS_DIR   / "profiles" / filename
@@ -130,18 +204,8 @@ def add_photo(slide, filename, left, top, width, height):
     if path:
         slide.shapes.add_picture(str(path), left, top, width, height)
         return True
-    return False
-
-
-def add_actionmap(slide, filename, left, top, width, height):
-    """正規化済みアクションマップ画像を挿入"""
-    normalized = filename.replace(".png", "-normalized.png")
-    proc = PROCESSED_DIR / "actionmap" / normalized
-    ref  = ASSETS_DIR   / "actionmap" / filename
-    path = proc if proc.exists() else (ref if ref.exists() else None)
-    if path:
-        slide.shapes.add_picture(str(path), left, top, width, height)
-        return True
+    if p is not None:
+        draw_silhouette(slide, left, top, width, height, p)
     return False
 
 
@@ -257,7 +321,7 @@ def sA05_mikami(slide, p):
                13, p["text_inv"], bold=True, align=PP_ALIGN.CENTER)
         tx(slide, point, Inches(2.1), ty + Inches(0.1), Inches(6.7), Inches(0.7),
            22, p["text"])
-    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sA06_sato(slide, p):
@@ -280,7 +344,7 @@ def sA06_sato(slide, p):
     for i, (line, color) in enumerate(zip(story, colors)):
         tx(slide, line, Inches(1.0), Inches(2.7) + i * Inches(1.0),
            Inches(8.0), Inches(0.85), 22 if i < 3 else 24, color, bold=(i == 3))
-    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sA07_bootcamp(slide, p):
@@ -302,31 +366,25 @@ def sA08_actionmap(slide, p):
     bg(slide, p)
     frame(slide, p)
     tx(slide, "受講後、こんなことができるようになります",
-       Inches(0.8), Inches(0.15), Inches(11.7), Inches(0.65), 24, p["text"],
+       Inches(0.8), Inches(0.4), Inches(11.7), Inches(0.7), 26, p["text"],
        bold=True, align=PP_ALIGN.CENTER)
+    box(slide, Inches(4.0), Inches(1.2), Inches(5.3), Inches(0.05), p["accent"])
     themes = [
-        ("actionmap-kensakujidoka.png",  "案件探索\n自動化", "営業前に\n案件候補が\n自動で集まる"),
-        ("actionmap-slide-seisaku.png",  "スライド\n制作",   "提案資料を\n半自動で\n作れる"),
-        ("actionmap-system-kaihatsu.png","システム\n開発",   "業務改善ツールを\nAIで\n自分で構築"),
+        ("案件探索\n自動化", "営業前に\n案件候補が\n自動で集まる"),
+        ("スライド\n制作",   "提案資料を\n半自動で\n作れる"),
+        ("システム\n開発",   "業務改善ツールを\nAIで\n自分で構築"),
     ]
     col_w = Inches(4.0)
-    img_h = Inches(2.25)
-    for i, (fname, theme, value) in enumerate(themes):
+    for i, (theme, value) in enumerate(themes):
         lx = Inches(0.55) + i * Inches(4.27)
-        # 画像サムネイル
-        has_img = add_actionmap(slide, fname, lx, Inches(1.0), col_w, img_h)
-        if not has_img:
-            box(slide, lx, Inches(1.0), col_w, img_h, p["card"], p["card_bd"], 1)
-            tx(slide, theme, lx, Inches(1.5), col_w, Inches(1.3),
-               22, p["primary"], bold=True, align=PP_ALIGN.CENTER)
-        # テーマ名
-        box(slide, lx, Inches(3.35), col_w, Inches(0.6), p["primary"])
-        tx(slide, theme.replace("\n", " "), lx + Inches(0.1), Inches(3.38),
-           col_w - Inches(0.2), Inches(0.55), 16, p["text_inv"], bold=True)
+        # テーマ名（大きく主役に）
+        box(slide, lx, Inches(1.7), col_w, Inches(1.6), p["primary"])
+        tx(slide, theme, lx, Inches(1.95), col_w, Inches(1.2),
+           30, p["text_inv"], bold=True, align=PP_ALIGN.CENTER)
         # 翻訳価値
-        box(slide, lx, Inches(4.0), col_w, Inches(2.2), p["card"], p["card_bd"], 1)
-        tx(slide, value, lx + Inches(0.15), Inches(4.15),
-           col_w - Inches(0.3), Inches(1.9), 22, p["text"], align=PP_ALIGN.CENTER)
+        box(slide, lx, Inches(3.5), col_w, Inches(2.8), p["card"], p["card_bd"], 1)
+        tx(slide, value, lx + Inches(0.15), Inches(3.9),
+           col_w - Inches(0.3), Inches(2.2), 24, p["text"], align=PP_ALIGN.CENTER)
     tx(slide, "全13テーマ・毎週増加中", Inches(0.8), Inches(6.85),
        Inches(11.7), Inches(0.45), 15, p["muted"], align=PP_ALIGN.RIGHT)
 
@@ -554,7 +612,7 @@ def sB04_mikami(slide, p):
                13, p["text_inv"], bold=True, align=PP_ALIGN.CENTER)
         tx(slide, point, Inches(2.2), ty + Inches(0.1), Inches(6.6), Inches(0.7),
            20, p["text"])
-    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sB05_sato(slide, p):
@@ -584,7 +642,7 @@ def sB05_sato(slide, p):
         else:
             tx(slide, fact, Inches(2.2), ty + Inches(0.1), Inches(6.6), Inches(0.7),
                19, p["text"])
-    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sB06_bootcamp(slide, p):
@@ -615,28 +673,29 @@ def sB07_actionmap(slide, p):
     bg(slide, p)
     frame(slide, p)
     tx(slide, "7日間で習得できる、実務直結のスキル",
-       Inches(0.8), Inches(0.15), Inches(11.7), Inches(0.65), 24, p["text"],
+       Inches(0.8), Inches(0.4), Inches(11.7), Inches(0.7), 26, p["text"],
        bold=True, align=PP_ALIGN.CENTER)
+    box(slide, Inches(4.0), Inches(1.2), Inches(5.3), Inches(0.05), p["accent"])
     themes = [
-        ("actionmap-kensakujidoka.png",  "案件探索\n自動化", "外注不要\n営業前に候補が集まる", "時間削減"),
-        ("actionmap-slide-seisaku.png",  "スライド\n制作",   "提案資料を\n半自動で作れる",     "工数削減"),
-        ("actionmap-system-kaihatsu.png","システム\n開発",   "業務改善ツールを\nAIで内製化",   "外注費削減"),
+        ("案件探索\n自動化", "外注不要\n営業前に候補が集まる", "時間削減"),
+        ("スライド\n制作",   "提案資料を\n半自動で作れる",     "工数削減"),
+        ("システム\n開発",   "業務改善ツールを\nAIで内製化",   "外注費削減"),
     ]
     col_w = Inches(4.0)
-    img_h = Inches(2.25)
-    for i, (fname, theme, value, tag) in enumerate(themes):
+    for i, (theme, value, tag) in enumerate(themes):
         lx = Inches(0.55) + i * Inches(4.27)
-        has_img = add_actionmap(slide, fname, lx, Inches(1.0), col_w, img_h)
-        if not has_img:
-            box(slide, lx, Inches(1.0), col_w, img_h, p["card"], p["card_bd"], 1)
-        box(slide, lx, Inches(3.35), col_w, Inches(0.55), p["primary"])
-        tx(slide, f"{theme.replace(chr(10), ' ')}  [{tag}]", lx + Inches(0.1), Inches(3.38),
-           col_w - Inches(0.2), Inches(0.5), 15, p["text_inv"], bold=True)
-        box(slide, lx, Inches(4.0), col_w, Inches(2.2), p["card"], p["card_bd"], 1)
-        tx(slide, value, lx + Inches(0.15), Inches(4.15),
-           col_w - Inches(0.3), Inches(1.9), 22, p["text"], align=PP_ALIGN.CENTER)
+        # テーマ名（大きく主役に）
+        box(slide, lx, Inches(1.7), col_w, Inches(1.6), p["primary"])
+        tx(slide, theme, lx, Inches(1.85), col_w, Inches(1.0),
+           28, p["text_inv"], bold=True, align=PP_ALIGN.CENTER)
+        tx(slide, f"［{tag}］", lx, Inches(2.85), col_w, Inches(0.45),
+           15, p["text_inv"], align=PP_ALIGN.CENTER)
+        # 翻訳価値
+        box(slide, lx, Inches(3.5), col_w, Inches(2.6), p["card"], p["card_bd"], 1)
+        tx(slide, value, lx + Inches(0.15), Inches(3.85),
+           col_w - Inches(0.3), Inches(2.0), 22, p["text"], align=PP_ALIGN.CENTER)
     tx(slide, "全13テーマ収録。社内12種のシステムがそのまま手に入ります。",
-       Inches(0.8), Inches(6.8), Inches(11.7), Inches(0.5), 16, p["primary"],
+       Inches(0.8), Inches(6.6), Inches(11.7), Inches(0.5), 16, p["primary"],
        bold=True, align=PP_ALIGN.CENTER)
 
 
@@ -806,7 +865,7 @@ def sC04_mikami(slide, p):
         tx_x = Inches(1.635) if i < 3 else Inches(1.5)
         tx(slide, point, tx_x, ty + Inches(0.25), Inches(7.3), Inches(0.5),
            20, p["text"])
-    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "mikami-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sC05_sato(slide, p):
@@ -833,7 +892,7 @@ def sC05_sato(slide, p):
     tx(slide, "→ 「自分でもできるかも」と思えるはずです",
        Inches(0.8), Inches(6.9), Inches(8.2), Inches(0.4), 15, p["muted"],
        align=PP_ALIGN.RIGHT)
-    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0))
+    add_photo(slide, "sato-profile.png", Inches(10.1), Inches(0.55), Inches(3.0), Inches(3.0), p)
 
 
 def sC06_support(slide, p):
@@ -863,26 +922,25 @@ def sC07_actionmap(slide, p):
     bg(slide, p)
     frame(slide, p)
     tx(slide, "7日後、こんなことができるようになります",
-       Inches(0.8), Inches(0.15), Inches(11.7), Inches(0.65), 24, p["text"],
+       Inches(0.8), Inches(0.4), Inches(11.7), Inches(0.7), 26, p["text"],
        bold=True, align=PP_ALIGN.CENTER)
+    box(slide, Inches(4.0), Inches(1.2), Inches(5.3), Inches(0.05), p["accent"])
     themes = [
-        ("actionmap-kensakujidoka.png",  "案件探索\n自動化", "仕事探しに\n時間をかけなくていい"),
-        ("actionmap-slide-seisaku.png",  "スライド\n制作",   "毎回ゼロから\n作る必要がなくなる"),
-        ("actionmap-system-kaihatsu.png","システム\n開発",   "業務改善ツールを\n自分で作れる"),
+        ("案件探索\n自動化", "仕事探しに\n時間をかけなくていい"),
+        ("スライド\n制作",   "毎回ゼロから\n作る必要がなくなる"),
+        ("システム\n開発",   "業務改善ツールを\n自分で作れる"),
     ]
     col_w = Inches(4.0)
-    img_h = Inches(2.25)
-    for i, (fname, theme, value) in enumerate(themes):
+    for i, (theme, value) in enumerate(themes):
         lx = Inches(0.55) + i * Inches(4.27)
-        has_img = add_actionmap(slide, fname, lx, Inches(1.0), col_w, img_h)
-        if not has_img:
-            box(slide, lx, Inches(1.0), col_w, img_h, p["card"], p["card_bd"], 1)
-        box(slide, lx, Inches(3.35), col_w, Inches(0.55), p["primary"])
-        tx(slide, theme.replace("\n", " "), lx + Inches(0.1), Inches(3.38),
-           col_w - Inches(0.2), Inches(0.5), 16, p["text_inv"], bold=True)
-        box(slide, lx, Inches(4.0), col_w, Inches(2.2), p["card"], p["card_bd"], 1)
-        tx(slide, value, lx + Inches(0.15), Inches(4.15),
-           col_w - Inches(0.3), Inches(1.9), 22, p["text"], align=PP_ALIGN.CENTER)
+        # テーマ名（大きく主役に）
+        box(slide, lx, Inches(1.7), col_w, Inches(1.6), p["primary"])
+        tx(slide, theme, lx, Inches(1.95), col_w, Inches(1.2),
+           30, p["text_inv"], bold=True, align=PP_ALIGN.CENTER)
+        # 翻訳価値
+        box(slide, lx, Inches(3.5), col_w, Inches(2.8), p["card"], p["card_bd"], 1)
+        tx(slide, value, lx + Inches(0.15), Inches(3.9),
+           col_w - Inches(0.3), Inches(2.2), 24, p["text"], align=PP_ALIGN.CENTER)
 
 
 def sC08_proof(slide, p):
@@ -977,24 +1035,99 @@ def build(pattern_key, slides_list, out_dir):
     for fn in slides_list:
         slide = blank(prs)
         fn(slide, p)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = str(out_dir / f"cc_v6_{pattern_key}_{ts}.pptx")
-    prs.save(out)
-    print(f"✅ Pattern {pattern_key} [{p['name']}] → {out}")
-    return out
+    normalize_all_fonts(prs)
+
+    # フォルダ準備：latest/ には常に最新版、archive/ には旧版がタイムスタンプ付きで蓄積
+    latest_dir = out_dir / "latest"
+    archive_dir = out_dir / "archive"
+    latest_dir.mkdir(exist_ok=True)
+    archive_dir.mkdir(exist_ok=True)
+
+    # 既存の最新版があればアーカイブに退避
+    latest_file = latest_dir / f"cc_v6_{pattern_key}.pptx"
+    if latest_file.exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archived = archive_dir / f"cc_v6_{pattern_key}_{ts}.pptx"
+        latest_file.rename(archived)
+        print(f"   旧版を退避: {archived.name}")
+
+    # 新版を latest/ に保存
+    prs.save(str(latest_file))
+    print(f"✅ Pattern {pattern_key} [{p['name']}] → {latest_file}")
+
+    # 自動で開く
+    subprocess.run(["open", str(latest_file)])
+
+    return str(latest_file)
+
+
+SLIDES_MAP = {
+    "A": SLIDES_A,
+    "B": SLIDES_B,
+    "C": SLIDES_C,
+}
+
+PATTERN_DESC = {
+    "A": "副業・案件獲得訴求（黒×パープル）",
+    "B": "法人・業務改善訴求（白×青）",
+    "C": "初心者安心訴求（白×グリーン）",
+}
+
+
+def select_patterns():
+    """どのパターンを生成するか対話で確認する。"""
+    print("=" * 50)
+    print("  スライド自動生成システム")
+    print("  本質のClaude Code 完全攻略 7dayブートキャンプ")
+    print("=" * 50)
+    print()
+    print("どのパターンを生成しますか？")
+    print()
+    print("  [A] 副業・案件獲得訴求（黒×パープル）")
+    print("      → AI副業・月10万円案件を狙う個人向け")
+    print()
+    print("  [B] 法人・業務改善訴求（白×青）")
+    print("      → 中小企業経営者・管理職向け")
+    print()
+    print("  [C] 初心者安心訴求（白×グリーン）")
+    print("      → AI・PC初心者・未経験者向け")
+    print()
+    print("  [ALL] 全パターン一括生成")
+    print()
+
+    while True:
+        answer = input("パターンを入力（A / B / C / ALL）: ").strip().upper()
+        if answer in ("A", "B", "C", "ALL"):
+            return answer
+        print("  ⚠️  A, B, C, ALL のいずれかを入力してください。")
 
 
 def main():
     out_dir = Path(__file__).parent / "output"
     out_dir.mkdir(exist_ok=True)
-    print("🚀 V6 生成開始（3ターゲット訴求パターン）")
-    print("   A: 副業・案件獲得訴求（黒×パープル）")
-    print("   B: 法人・業務改善訴求（白×青）")
-    print("   C: 初心者安心訴求（白×グリーン）\n")
-    build("A", SLIDES_A, out_dir)
-    build("B", SLIDES_B, out_dir)
-    build("C", SLIDES_C, out_dir)
-    print("\n✨ 全完了")
+
+    # コマンドライン引数でパターンを直接指定可能
+    # 例: python generate_v6.py A
+    if len(sys.argv) >= 2:
+        answer = sys.argv[1].upper()
+        if answer not in ("A", "B", "C", "ALL"):
+            print(f"❌ 不明なパターン: {sys.argv[1]}")
+            print("   使い方: python generate_v6.py [A|B|C|ALL]")
+            sys.exit(1)
+    else:
+        answer = select_patterns()
+
+    targets = ["A", "B", "C"] if answer == "ALL" else [answer]
+
+    print()
+    print(f"▶ 生成パターン: {', '.join(targets)}")
+    print()
+
+    for key in targets:
+        build(key, SLIDES_MAP[key], out_dir)
+
+    print()
+    print("✨ 完了！")
 
 
 if __name__ == "__main__":
