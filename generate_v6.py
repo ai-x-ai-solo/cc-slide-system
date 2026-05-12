@@ -19,7 +19,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.oxml.ns import qn
 from lxml import etree
 
-FONT_NAME = "Hiragino Kaku Gothic ProN"
+FONT_NAME = "ヒラギノ角ゴシック"
 
 SLIDE_W = Inches(13.33)
 SLIDE_H = Inches(7.5)
@@ -1102,8 +1102,24 @@ def select_patterns():
         print("  ⚠️  A, B, C, ALL のいずれかを入力してください。")
 
 
+def resolve_main_project_dir():
+    """worktreeから実行されても、メインプロジェクトのパスを返す。
+
+    Claude Code は .claude/worktrees/<name>/ に隔離環境を作る。
+    その中で生成すると worktree の output/ に保存されてしまうため、
+    常にメインプロジェクトの output/ に集約するよう解決する。
+    """
+    script_dir = Path(__file__).resolve().parent
+    parts = script_dir.parts
+    if ".claude" in parts:
+        idx = parts.index(".claude")
+        # .claude の上がメインプロジェクトのルート
+        return Path(*parts[:idx])
+    return script_dir
+
+
 def main():
-    out_dir = Path(__file__).parent / "output"
+    out_dir = resolve_main_project_dir() / "output"
     out_dir.mkdir(exist_ok=True)
 
     # コマンドライン引数でパターンを直接指定可能
